@@ -8,7 +8,64 @@ from mcp.client.stdio import stdio_client
 
 # Define the model and directories
 MODEL = "llama3.2:3b"
-ALLOWED_DIRS = ["/Users/daliys/Downloads", "/Users/daliys/Daliys/Swift/Soma"]
+# Expanding allowed directories to give comprehensive access as requested
+import os
+# Only include directories that actually exist to prevent MCP server from crashing
+ALLOWED_DIRS = [d for d in ["/Users/daliys", "/", "/Users/daliys/Downloads", "/Users/daliys/Daliys/Swift/Soma"] if os.path.exists(d)]
+if not ALLOWED_DIRS:
+    ALLOWED_DIRS = ["/"] # Fallback if none exist
+
+def extract_tool_calls(content):
+    import re
+    tool_calls = []
+
+    # Method 1: Look for regex matches of {"name": "...", "arguments": {...}} or {"name": "...", "parameters": {...}}
+    matches = re.finditer(r'\{[^{}]*"name"\s*:\s*"(?P<name>\w+)"[^{}]*"(?:parameters|arguments)"\s*:\s*(?P<params>\{[^{}]*\})[^{}]*\}', content, re.DOTALL)
+    for match in matches:
+        name = match.group("name")
+        params_str = match.group("params")
+        try:
+            params = json.loads(params_str)
+            tool_calls.append({"id": "call_fallback", "function": {"name": name, "arguments": params}})
+        except:
+            pass
+
+    if tool_calls: return tool_calls
+
+    # Method 2: Code blocks
+    json_blocks = re.findall(r'```(?:json)?\n(.*?)\n```', content, re.DOTALL)
+    for block in json_blocks:
+        try:
+            data = json.loads(block)
+            if isinstance(data, dict) and "name" in data:
+                args = data.get("arguments") or data.get("parameters") or {}
+                tool_calls.append({"id": "call_fallback", "function": {"name": data["name"], "arguments": args}})
+            elif isinstance(data, list):
+                for item in data:
+                    if isinstance(item, dict) and "name" in item:
+                        args = item.get("arguments") or item.get("parameters") or {}
+                        tool_calls.append({"id": "call_fallback", "function": {"name": item["name"], "arguments": args}})
+        except:
+            pass
+
+    if tool_calls: return tool_calls
+
+    # Method 3: Bare JSON block spanning the text
+    try:
+        start = content.find('{')
+        end = content.rfind('}')
+        if start != -1 and end != -1 and start < end:
+            data = json.loads(content[start:end+1])
+            if isinstance(data, dict) and "name" in data:
+                args = data.get("arguments") or data.get("parameters") or {}
+                # Sometimes Llama emits the path argument at the top level
+                if not args and "path" in data:
+                    args = {"path": data["path"]}
+                tool_calls.append({"id": "call_fallback", "function": {"name": data["name"], "arguments": args}})
+    except:
+        pass
+
+    return tool_calls
 
 async def query_ollama(messages, tools=None):
     url = "http://localhost:11434/api/chat"
@@ -48,22 +105,31 @@ async def run_scout():
     # Define the Scout Persona - less eager, more precise
     system_msg = {
         "role": "system", 
-        "content": f"""You are Soma, a helpful local AI. 
-- ONLY use your file tools when the user explicitly asks you to find, read, or explore files. 
-- If they just say 'hello', just respond politely and don't list anything.
-- ROOT PATHS: /Users/daliys/Downloads and /Users/daliys/Daliys/Swift/Soma.
-- TOOL USAGE: 
-  * 'list_directory' is ONLY for folders. 
-  * 'read_file' is ONLY for files.
-- FORMAT: Use the standard tool calling format. If you can't find a file, don't guess; list the folder it might be in first."""
+        "content": """You are Soma, a highly capable local AI scout with full access to the user's filesystem.
+Your primary job is to find, list, read, and analyze files based on the user's requests.
+- When asked to list, look, find, or explore, ALWAYS use the 'list_directory' tool with a path (e.g., "/Users/daliys/Downloads" or "/").
+- When asked to read, summarize, or analyze a file, ALWAYS use the 'read_file' tool with the exact absolute path.
+- YOU MUST output tool calls in valid JSON format! Example:
+```json
+{"name": "list_directory", "arguments": {"path": "/Users/daliys"}}
+```
+or
+```json
+{"name": "read_file", "arguments": {"path": "/Users/daliys/Downloads/file.txt"}}
+```
+- If you can't find a file, don't hallucinate; first use `list_directory` to look around."""
     }
     
     # Prepend system message and combine with history
     messages = [system_msg] + history + [{"role": "user", "content": user_prompt}]
 
     # Define the MCP server parameters (Filesystem server)
+    # We will use 'npx' from the PATH instead of hardcoding the user's local path
+    # in case this script runs on a different environment
+    import shutil
+    npx_path = shutil.which("npx") or "npx"
     server_params = StdioServerParameters(
-        command="/Users/daliys/.nvm/versions/node/v22.21.0/bin/npx",
+        command=npx_path,
         args=["-y", "@modelcontextprotocol/server-filesystem"] + ALLOWED_DIRS
     )
 
@@ -97,19 +163,8 @@ async def run_scout():
                 tool_calls = assistant_msg.get("tool_calls", [])
 
                 # FALLBACK: Llama 3.2:3b often puts tool calls in 'content' as text JSON
-                if not tool_calls and "{" in content and '"name":' in content:
-                    try:
-                        import re
-                        match = re.search(r'\{.*"name":\s*"(?P<name>\w+)".*"parameters":\s*(?P<params>\{.*\}).*\}', content, re.DOTALL)
-                        if match:
-                            name = match.group("name")
-                            params_str = match.group("params")
-                            # Clean up potential markdown or trailing text
-                            params_str = params_str.split('}')[0] + '}'
-                            params = json.loads(params_str)
-                            tool_calls = [{"id": "call_fallback", "function": {"name": name, "arguments": params}}]
-                    except:
-                        pass
+                if not tool_calls and "{" in content:
+                    tool_calls = extract_tool_calls(content)
 
                 if tool_calls:
                     # Append assistant's request to messages
