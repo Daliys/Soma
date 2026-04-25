@@ -5,11 +5,12 @@ Reads the gather bundle from scout_pipeline.py and sends either the direct
 prompt or the curated evidence pack to the local Ollama model.
 """
 import json
+import os
 import sys
 import urllib.request
 
-MODEL = "llama3.2:3b"
-MAX_PROMPT_CHARS = 120_000
+MODEL = os.environ.get("SOMA_LOCAL_MODEL", "qwen3:4b")
+MAX_PROMPT_CHARS = 28_000
 
 
 def collect_files_used(bundle):
@@ -20,10 +21,20 @@ def collect_files_used(bundle):
 
 
 def query_ollama(prompt: str) -> dict:
+    # Use a system prompt to discourage verbose internal reasoning (Thinking)
+    # and provide options to stabilize performance.
     payload = {
         "model": MODEL,
-        "messages": [{"role": "user", "content": prompt}],
+        "think": False,
+        "messages": [
+            {"role": "system", "content": "You are a concise engineering assistant. Use the compact evidence packet first. If evidence is insufficient, request only 1-3 exact missing files or commands. Do not add verbose reasoning."},
+            {"role": "user", "content": prompt}
+        ],
         "stream": False,
+        "options": {
+            "num_predict": 1024,
+            "temperature": 0.3,
+        }
     }
     request = urllib.request.Request(
         "http://localhost:11434/api/chat",
@@ -46,7 +57,7 @@ def relay(bundle_json_str: str) -> dict:
     if "error" in bundle:
         return {"error": bundle["error"]}
 
-    enriched = bundle.get("enriched_prompt") or bundle.get("original_prompt", "")
+    enriched = bundle.get("codex_packet") or bundle.get("enriched_prompt") or bundle.get("original_prompt", "")
     if not enriched:
         return {"error": "Bundle contains no prompt to relay"}
 
@@ -65,8 +76,11 @@ def relay(bundle_json_str: str) -> dict:
     return {
         "response": response_text,
         "source": "llama_local",
+        "model": MODEL,
         "routing_decision": bundle.get("routing_decision"),
         "enriched_prompt": enriched,
+        "codex_packet": enriched,
+        "estimated_tokens": bundle.get("estimated_tokens"),
         "files_used": collect_files_used(bundle),
         "errors_found": len(bundle.get("error_lines") or []),
     }

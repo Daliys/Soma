@@ -1,24 +1,26 @@
-# Soma: The Local AI Scout 🕵️‍♂️
+# Soma: Local Evidence Compiler
 
-Soma is a high-performance, privacy-first macOS application that orchestrates local LLMs (via Ollama) and the Model Context Protocol (MCP) to provide a seamless "AI Scout" experience. Unlike traditional chat interfaces, Soma has "eyes" on your local filesystem, allowing it to explore, read, and summarize your files without ever sending data to the cloud.
+Soma is a privacy-first macOS tool for preparing compact Codex-ready evidence packets from local projects. Its default path is deterministic: scan files, logs, symbols, Unity assets, and git state; then emit a budgeted packet instead of sending raw diffs, raw logs, or whole files to a model.
 
-## 🌟 Key Features
+## Key Features
 
-- **Local Intelligence**: Powered by `llama3.2:3b` running natively via Ollama.
-- **MCP Integration**: Uses the official Model Context Protocol to securely access local directories.
+- **Evidence Compiler**: Builds concise packets with goal, known facts, git summary, selected snippets, omitted context, and next inspection guidance.
+- **Token Budgets**: Supports `fast`, `balanced`, and `deep` packet tiers. The app defaults to `balanced`.
+- **No Full Diff by Default**: Git changes are summarized by file list, hunk metadata, signals, and omitted raw-diff character count.
+- **Repo Index Cache**: Caches deterministic file metadata, symbols, Unity references, and hashes under `~/Library/Caches/Soma/repo_index`.
+- **Optional Local Model**: Uses `qwen3:4b` for Scout mode and optional local analysis, but not on the critical evidence path.
+- **MCP Integration**: Scout mode can still use the official Model Context Protocol filesystem server for interactive local exploration.
 - **Privacy First**: All processing happens on your machine. No telemetry, no cloud inference.
-- **Continuous Chat**: Maintains context and history for long-running investigations.
-- **Intelligent Path Correction**: Automatically resolves relative file names to absolute paths within allowed roots.
-- **Binary File Handling**: Capable of scanning through `.docx`, `.pdf`, and other binary formats to extract readable text.
 
-## 🏗 Architecture
+## Architecture
 
 Soma is built with a decoupled architecture:
 
-1.  **SwiftUI Frontend**: A modern, native macOS app that manages the chat UI, Ollama process monitoring, and asynchronous script execution.
-2.  **Python Scout Pipeline**: A sophisticated backend script (`scout_pipeline.py`) that acts as an **MCP Client**.
-3.  **MCP Filesystem Server**: Orchestrated via `npx`, providing a standardized interface for file operations.
-4.  **Ollama API**: Handles the local inference and tool-calling logic for Llama 3.2.
+1. **SwiftUI Frontend**: Native macOS UI for choosing project roots, preparing packets, and copying context into Codex.
+2. **Python Scout Pipeline**: `scout_pipeline.py` performs deterministic evidence gathering and packet generation.
+3. **Repo Index Cache**: Stores file metadata and extracted symbols by project root for faster repeated runs.
+4. **Optional Ollama Layer**: `qwen3:4b` is the default local helper. `gemma4:e4b` remains a larger fallback outside the default path.
+5. **MCP Filesystem Server**: Scout mode can still use `npx @modelcontextprotocol/server-filesystem`.
 
 ## 🚀 Getting Started
 
@@ -42,28 +44,44 @@ Soma is built with a decoupled architecture:
     pip3 install mcp --break-system-packages
     ```
 
-3.  **Download the Model**:
+3.  **Download the Default Local Model**:
     ```bash
-    ollama pull llama3.2:3b
+    ollama pull qwen3:4b
     ```
 
 4.  **Open in Xcode**:
     Open `Soma.xcodeproj`, ensure the Team/Signing is configured, and hit **Cmd + R**.
 
-## 🛠 Usage
+## Usage
 
-### Scouting Files
-You can ask Soma to find or read files in your `Downloads` or `Project` folders:
-- *"List the files in my Downloads folder."*
-- *"Find 'Contract.docx' and tell me what the expiration date is."*
-- *"Search the project folder for any Python scripts and summarize them."*
+### Preparing Codex Packets
+Select a project root, describe the bug or task, and press **Prepare Packet**. Soma will:
 
-### Ollama Management
-The UI includes a status monitor for Ollama:
-- **Green**: Ollama is running and the model is loaded in memory.
-- **Orange**: Ollama is running, but the model is idle/unloaded.
-- **Red**: Ollama is offline.
-- Use the **Start/Stop AI** buttons to manage your system resources.
+- classify whether the prompt needs local evidence
+- scan deterministic project signals
+- summarize git status and diff hunks without including raw diff
+- extract line-ranged snippets, symbols, Unity references, and log errors
+- report estimated tokens and omitted context
+- generate a packet designed to paste into Codex
+
+### Scout Mode
+Scout mode remains available for direct local model exploration through MCP. It uses `qwen3:4b` by default and should be treated as optional support, not the main debugging path.
+
+### Benchmarking
+Run the benchmark harness from the repo root:
+
+```bash
+/opt/homebrew/bin/python3 Soma/benchmark_ollama.py --model qwen3:4b
+```
+
+The important metrics are gather wall time, packet token count, omitted raw diff chars, and local model time on the compact packet.
+
+### Tests
+Run the deterministic packet regression tests:
+
+```bash
+/opt/homebrew/bin/python3 -m unittest tests/test_scout_pipeline.py
+```
 
 ## 🔒 Security & Permissions
 

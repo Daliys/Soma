@@ -1,0 +1,879 @@
+You are an expert Swift, Python, Mojo, MCP, and Unity tooling developer.
+
+I want you to design and implement a local MCP system for my Unity gamedev workflow.
+
+Important tech stack:
+- The MCP server / main orchestration layer should be written in Swift.
+- The analysis backend can be written in Python.
+- Mojo can be used optionally for performance-sensitive parsing/indexing/search tasks if it is actually beneficial.
+- Do not use TypeScript/Node.js.
+- The system must run locally on macOS.
+- Target machine: MacBook Pro M5 with 32 GB RAM.
+- The system should integrate with a local LLM through Ollama or an OpenAI-compatible local endpoint such as LM Studio.
+
+Context:
+- I am a Unity 2D game developer.
+- I use Codex / large AI models for coding and debugging.
+- Large models waste too many tokens and too much time on simple context-gathering tasks:
+  - reading huge Unity logs
+  - searching project structure
+  - finding relevant files
+  - summarizing large C# files
+  - analyzing git diffs
+  - grouping compile errors
+  - inspecting Unity prefabs/scenes for missing references
+- I want to run a smaller local model, for example Qwen/Qwen Coder via Ollama or LM Studio.
+- The local model should act as a “junior context worker”, not as the final decision maker.
+- The large model should be able to call this local junior through MCP tools and receive compact, evidence-based reports.
+
+Goal:
+Build an MCP server named `local-junior-mcp`.
+
+The MCP server should expose tools for:
+- Unity project mapping
+- file reading
+- text search
+- relevant file discovery
+- Unity log analysis
+- C# compile error grouping
+- git status/diff summarization
+- Unity prefab/scene/reference inspection
+- missing script detection
+- file summarization
+- compact context handoff preparation for a senior AI model
+
+High-level architecture:
+- Swift MCP server:
+  - exposes MCP tools
+  - validates requests
+  - manages configuration
+  - calls Python/Mojo worker scripts
+  - calls local LLM endpoint when needed
+  - returns structured MCP responses
+
+- Python worker:
+  - handles filesystem scanning
+  - log parsing
+  - Unity YAML inspection
+  - git/ripgrep wrappers
+  - file hashing and caching
+  - chunking large files
+  - deterministic analysis
+  - optional local LLM calls if simpler
+
+- Mojo worker, optional:
+  - only use for performance-sensitive tasks if it gives real benefit
+  - examples:
+    - fast log scanning
+    - fast large-file indexing
+    - fast Unity YAML reference scanning
+  - if Mojo adds too much complexity, keep v1 Python-only for workers
+
+Core philosophy:
+- The junior model collects evidence.
+- The junior model reduces noise.
+- The junior model summarizes relevant context.
+- The junior model identifies likely root causes with confidence.
+- The junior model must not make final architectural decisions.
+- The junior model must not modify project files by default.
+- The junior model should return compact reports with file paths, line numbers, evidence, and next recommended inspection targets.
+
+Important safety rule:
+The system must be read-only by default.
+
+Allowed by default:
+- read files
+- read file ranges
+- list files
+- search text
+- analyze logs
+- analyze git status/diff/log
+- parse Unity metadata
+- write reports only into a local cache folder:
+  `.local-junior-cache/reports`
+
+Forbidden by default:
+- editing source files
+- deleting files
+- moving files
+- running arbitrary destructive shell commands
+- git reset
+- git checkout
+- git clean
+- package installs
+- modifying Unity prefab/scene YAML
+- committing changes
+
+Implement a strict permission layer.
+In v1, do not implement dangerous write operations at all.
+
+Primary use case:
+The senior model receives a user request like:
+“After changing WallSlide, the player sometimes cannot jump.”
+
+Instead of reading the whole Unity project, the senior model calls:
+
+`local_junior.prepare_context`
+
+The MCP server then:
+1. understands the request;
+2. scans project structure;
+3. searches relevant files;
+4. reads recent Unity logs;
+5. checks git status and git diff;
+6. inspects relevant prefabs/scenes if needed;
+7. summarizes evidence;
+8. returns a compact handoff report.
+
+Expected result:
+The senior model receives a short, useful context package:
+- project summary
+- relevant files
+- relevant snippets or line ranges
+- log summary
+- git diff summary
+- Unity prefab/scene findings
+- likely causes
+- confidence level
+- what to inspect next
+
+Suggested project structure:
+
+local-junior-mcp/
+  README.md
+  .env.example
+  Package.swift
+  Sources/
+    LocalJuniorMCP/
+      main.swift
+      Config.swift
+      MCPServer.swift
+      ToolRegistry.swift
+      ToolSchemas.swift
+      ToolResponse.swift
+      LocalModelClient.swift
+      OllamaClient.swift
+      OpenAICompatibleClient.swift
+      PythonWorkerClient.swift
+      SafePath.swift
+      Logger.swift
+  Workers/
+    python/
+      local_junior_worker/
+        __init__.py
+        main.py
+        config.py
+        paths.py
+        shell.py
+        project_map.py
+        search_text.py
+        read_file.py
+        git_tools.py
+        unity_logs.py
+        analyze_logs.py
+        compile_errors.py
+        relevant_files.py
+        summarize_file.py
+        summarize_git_diff.py
+        unity_metadata.py
+        prefab_inspector.py
+        scene_inspector.py
+        missing_scripts.py
+        references.py
+        prepare_context.py
+        cache.py
+        hashing.py
+        llm_client.py
+        prompts.py
+        safe_json.py
+        line_numbers.py
+      pyproject.toml
+      requirements.txt
+    mojo/
+      README.md
+      optional_fast_scanner.mojo
+  Tests/
+    LocalJuniorMCPTests/
+    WorkerFixtureProjects/
+      MinimalUnity2DProject/
+
+Communication between Swift and Python:
+Use JSON over stdin/stdout for v1.
+
+Swift calls Python like:
+
+`python3 Workers/python/local_junior_worker/main.py <tool_name>`
+
+and sends JSON input through stdin.
+
+Python returns JSON output through stdout.
+
+All worker responses should have a consistent envelope:
+
+{
+  "ok": true,
+  "data": {...},
+  "warnings": [],
+  "errors": []
+}
+
+On failure:
+
+{
+  "ok": false,
+  "data": null,
+  "warnings": [],
+  "errors": [
+    {
+      "code": "ERROR_CODE",
+      "message": "Human readable message"
+    }
+  ]
+}
+
+Do not print logs to stdout from Python workers.
+Logs should go to stderr or to `.local-junior-cache/logs`.
+
+Swift responsibilities:
+- Start the MCP server.
+- Register tools.
+- Validate tool input.
+- Resolve project root safely.
+- Call Python workers.
+- Enforce timeouts.
+- Enforce max output sizes.
+- Convert worker responses into MCP responses.
+- Call local LLM endpoints when needed, unless delegated to Python.
+- Handle unavailable local model gracefully.
+
+Python responsibilities:
+- Do deterministic analysis.
+- Use ripgrep if available.
+- Use git safely.
+- Parse Unity logs and metadata.
+- Scan Unity YAML files.
+- Cache expensive summaries.
+- Chunk large files.
+- Optionally call local LLM for summarization/ranking.
+
+Mojo responsibilities:
+- Optional only.
+- Do not block v1 on Mojo.
+- Use Mojo only if it clearly improves speed for:
+  - huge log scanning
+  - YAML reference scanning
+  - large project indexing
+- Provide Python fallback for every Mojo feature.
+
+MCP tools to implement in v1:
+
+1. `project_map`
+
+Purpose:
+Return a compact map of the Unity project.
+
+Input:
+{
+  "root": string optional,
+  "maxDepth": number optional,
+  "includeUnityMetadata": boolean optional
+}
+
+Behavior:
+- Detect Unity project root.
+- Summarize important folders:
+  - Assets
+  - Packages
+  - ProjectSettings
+- Identify:
+  - Unity version from ProjectSettings/ProjectVersion.txt
+  - packages from Packages/manifest.json
+  - asmdef files
+  - scenes
+  - prefabs
+  - ScriptableObjects
+  - C# script folders
+  - tests if any
+- Avoid returning massive file trees.
+- Return compact structured JSON plus human-readable summary.
+
+2. `search_text`
+
+Purpose:
+Fast text search using ripgrep if available.
+
+Input:
+{
+  "query": string,
+  "root": string optional,
+  "globs": string[] optional,
+  "maxResults": number optional,
+  "contextLines": number optional
+}
+
+Behavior:
+- Prefer `rg`.
+- Search safely.
+- Return matches with:
+  - file path
+  - line number
+  - matched line
+  - optional context lines
+- Ignore common noisy folders:
+  - Library
+  - Temp
+  - Obj
+  - Logs unless explicitly requested
+  - UserSettings
+  - .git
+  - Builds
+  - Build
+  - node_modules
+  - .local-junior-cache
+
+3. `read_file_range`
+
+Purpose:
+Read a specific line range from a file.
+
+Input:
+{
+  "path": string,
+  "startLine": number,
+  "endLine": number
+}
+
+Behavior:
+- Return line-numbered content.
+- Prevent path traversal outside project root.
+- Enforce max line count.
+
+4. `find_relevant_files`
+
+Purpose:
+Given a natural-language problem, identify files likely relevant to it.
+
+Input:
+{
+  "query": string,
+  "root": string optional,
+  "maxFiles": number optional,
+  "includeReasons": boolean optional
+}
+
+Behavior:
+- Use hybrid approach:
+  - keyword extraction
+  - ripgrep search
+  - filename matching
+  - Unity-specific terms
+  - optional local LLM ranking
+- Return:
+  - file paths
+  - reasons
+  - matched symbols/keywords
+  - confidence
+- Prioritize:
+  - .cs
+  - .asmdef
+  - .prefab
+  - .unity
+  - .asset
+  - .inputactions
+  - Packages/manifest.json
+  - ProjectSettings files
+
+5. `summarize_file`
+
+Purpose:
+Summarize a large source/config file for the senior model.
+
+Input:
+{
+  "path": string,
+  "focus": string optional,
+  "maxOutputTokens": number optional
+}
+
+Behavior:
+- Read the file safely.
+- If file is small, summarize directly.
+- If large, chunk it.
+- Use local model to summarize.
+- Return:
+  - purpose
+  - public API/classes
+  - Unity lifecycle methods if C#
+  - serialized fields
+  - dependencies
+  - side effects
+  - suspicious areas related to focus
+  - important line ranges
+- Cache summaries by file hash and focus.
+
+6. `git_status`
+
+Purpose:
+Return compact git status.
+
+Input:
+{
+  "root": string optional
+}
+
+Behavior:
+- Run safe git status commands.
+- Return changed files grouped by:
+  - modified
+  - added
+  - deleted
+  - renamed
+  - untracked
+- No destructive commands.
+
+7. `summarize_git_diff`
+
+Purpose:
+Summarize current git diff, optionally focused on a problem.
+
+Input:
+{
+  "root": string optional,
+  "focus": string optional,
+  "includeRiskAssessment": boolean optional,
+  "maxOutputTokens": number optional
+}
+
+Behavior:
+- Run `git diff --stat`.
+- Run `git diff` with safety limits.
+- If diff is large, chunk/summarize.
+- Return:
+  - changed files
+  - important changes
+  - likely behavior impact
+  - Unity-specific risks
+  - suspicious changes
+  - recommended files to inspect
+- Never run destructive git commands.
+
+8. `unity_logs`
+
+Purpose:
+Locate and return recent Unity logs.
+
+Input:
+{
+  "logType": "editor" | "player" | "build" | "android" | "ios" | "auto",
+  "root": string optional,
+  "maxBytes": number optional
+}
+
+Behavior:
+- For macOS, detect common log locations:
+  - ~/Library/Logs/Unity/Editor.log
+  - ~/Library/Logs/Unity/Editor-prev.log
+  - ~/Library/Logs/CompanyName/ProductName/Player.log if detectable
+- Also check project-local log folders:
+  - Logs
+  - BuildLogs
+  - .local-junior-cache/logs
+- Return tail of logs with metadata.
+- Respect max bytes.
+- Do not dump huge logs by default.
+
+9. `analyze_logs`
+
+Purpose:
+Analyze Unity logs and return compact diagnosis.
+
+Input:
+{
+  "logType": "editor" | "player" | "build" | "android" | "ios" | "auto",
+  "focus": string optional,
+  "root": string optional,
+  "maxOutputTokens": number optional
+}
+
+Behavior:
+- Load recent relevant log content.
+- Extract:
+  - exceptions
+  - errors
+  - warnings if relevant
+  - stack traces
+  - C# compile errors
+  - shader errors
+  - package manager errors
+  - build errors
+- Group repeated errors.
+- Distinguish likely root cause from cascading errors.
+- Return:
+  - root cause candidates
+  - evidence
+  - file paths and line numbers if present
+  - ignored noise summary
+  - recommended next actions
+  - confidence
+
+10. `group_compile_errors`
+
+Purpose:
+Extract and group C# compile errors from logs.
+
+Input:
+{
+  "root": string optional,
+  "logType": "editor" | "build" | "auto",
+  "focus": string optional
+}
+
+Behavior:
+- Parse common C# errors:
+  - CS0246
+  - CS1061
+  - CS0103
+  - CS0117
+  - CS1503
+  - CS0535
+- Return:
+  - grouped errors
+  - suspected root cause
+  - cascaded errors
+  - files/line numbers
+  - suggested files to inspect
+
+11. `find_missing_scripts`
+
+Purpose:
+Detect missing/broken Unity script references in YAML files.
+
+Input:
+{
+  "root": string optional,
+  "maxResults": number optional
+}
+
+Behavior:
+- Scan `.prefab`, `.unity`, `.asset` files.
+- Detect missing script patterns:
+  - `m_Script: {fileID: 0}`
+  - broken GUID references if practical
+- Resolve script GUIDs using `.meta` files when possible.
+- Return:
+  - affected asset path
+  - line number
+  - surrounding context
+  - possible GameObject/component name if detectable
+
+12. `inspect_unity_references`
+
+Purpose:
+Find prefabs/scenes/assets that reference a given script/component/GUID/file.
+
+Input:
+{
+  "target": string,
+  "root": string optional,
+  "targetType": "scriptPath" | "guid" | "className" | "auto",
+  "maxResults": number optional
+}
+
+Behavior:
+- If target is C# script path, read its `.meta` and get GUID.
+- Search `.prefab`, `.unity`, `.asset` for that GUID.
+- Return:
+  - referencing files
+  - line numbers
+  - context
+  - likely GameObject/component names when possible
+
+13. `prepare_context`
+
+Purpose:
+Main high-level tool used by senior model.
+
+Input:
+{
+  "userRequest": string,
+  "root": string optional,
+  "includeLogs": boolean optional default true,
+  "includeGitDiff": boolean optional default true,
+  "includeUnityMetadata": boolean optional default true,
+  "maxRelevantFiles": number optional default 8,
+  "maxOutputTokens": number optional default 2500
+}
+
+Behavior:
+This tool orchestrates the other tools:
+1. Detect project root.
+2. Build compact project map.
+3. Find relevant files.
+4. Summarize relevant files if useful.
+5. Analyze logs if requested.
+6. Summarize git diff if requested.
+7. Inspect Unity metadata/prefabs/scenes if useful.
+8. Produce a compact handoff report.
+
+Output format:
+{
+  "summary": string,
+  "project": {...},
+  "relevantFiles": [
+    {
+      "path": string,
+      "reason": string,
+      "confidence": number,
+      "importantLineRanges": [...]
+    }
+  ],
+  "logFindings": [...],
+  "gitFindings": {...},
+  "unityFindings": [...],
+  "hypotheses": [
+    {
+      "hypothesis": string,
+      "evidence": string[],
+      "confidence": number
+    }
+  ],
+  "recommendedNextInspections": [...],
+  "seniorPrompt": string
+}
+
+The `seniorPrompt` should be a compact text block that can be pasted directly into a senior model. It should include:
+- user request
+- compressed context
+- relevant files
+- evidence
+- likely causes
+- exact next question for the senior model
+
+Local LLM integration:
+Implement a local model client.
+
+It should support:
+1. Ollama
+2. OpenAI-compatible local endpoint, for example LM Studio
+
+Config through environment variables:
+
+LOCAL_JUNIOR_PROVIDER=ollama | openai-compatible
+LOCAL_JUNIOR_BASE_URL=http://localhost:11434
+LOCAL_JUNIOR_MODEL=qwen3-coder:8b
+LOCAL_JUNIOR_TIMEOUT_MS=120000
+LOCAL_JUNIOR_MAX_INPUT_CHARS=120000
+LOCAL_JUNIOR_MAX_OUTPUT_TOKENS=2000
+PROJECT_ROOT=/optional/default/project/root
+PYTHON_WORKER_PATH=Workers/python/local_junior_worker/main.py
+PYTHON_EXECUTABLE=python3
+USE_MOJO=false
+MOJO_WORKER_PATH=Workers/mojo/optional_fast_scanner.mojo
+
+For Ollama:
+- Use `/api/chat` or `/api/generate`.
+- Support model name from env.
+- Handle timeouts.
+- Handle unavailable local model gracefully.
+- If local model is unavailable, deterministic tools should still work and return non-LLM summaries where possible.
+
+For OpenAI-compatible:
+- Use `/v1/chat/completions`.
+- Support local endpoint and model name.
+- Do not assume internet access.
+
+Prompt for junior model:
+Use a strict system prompt similar to:
+
+“You are a local Unity project analysis worker.
+Your job is to collect evidence, reduce noise, summarize context, find relevant files, and identify likely root causes.
+You must not modify files.
+You must not invent files, logs, line numbers, or evidence.
+Always prefer concrete evidence over speculation.
+When uncertain, say uncertain.
+Return compact structured output.
+Always include:
+1. Summary
+2. Evidence
+3. Relevant files
+4. Likely causes
+5. Confidence
+6. What the senior model should inspect next.”
+
+Senior model usage guidance:
+Add documentation in README explaining that the senior model should use this MCP server before broad searches or reading huge logs/files.
+
+Recommended senior instruction:
+
+“You have access to local_junior_mcp.
+Use it to reduce unnecessary context gathering.
+Before inspecting broad project areas, large logs, or many files, ask junior to prepare a compact context package.
+Use junior for:
+- Unity log triage
+- relevant file discovery
+- git diff summarization
+- file summarization
+- prefab/scene reference search
+- compile error grouping
+Trust junior only when it provides evidence:
+- file paths
+- line numbers
+- log excerpts
+- git diff references
+Use junior reports as context, not truth.
+Do not let junior make final architectural decisions.”
+
+Implementation details:
+- Use strong Swift types where possible.
+- Use Codable for JSON schemas.
+- Use Python pydantic/dataclasses for worker input/output validation.
+- Use safe path resolution to ensure file reads stay inside project root.
+- Use command execution wrappers with allowlisted commands only.
+- Do not expose arbitrary shell execution.
+- Use max output sizes everywhere.
+- Use caches for expensive summaries:
+  - `.local-junior-cache/file-summaries`
+  - `.local-junior-cache/reports`
+  - `.local-junior-cache/project-index.json`
+- Cache keys should include file path, file hash, and focus string.
+- Use SHA-256 hashes.
+- Include line numbers in file snippets.
+- Normalize paths to project-relative paths in outputs.
+- Ignore noisy directories:
+  - Library
+  - Temp
+  - Obj
+  - Logs unless explicitly reading logs
+  - UserSettings
+  - .git
+  - Builds
+  - Build
+  - node_modules
+  - .local-junior-cache
+
+Unity-specific behavior:
+- Detect Unity version from:
+  - ProjectSettings/ProjectVersion.txt
+- Parse packages from:
+  - Packages/manifest.json
+- Detect scenes from:
+  - Assets/**/*.unity
+- Detect prefabs from:
+  - Assets/**/*.prefab
+- Detect ScriptableObjects/assets from:
+  - Assets/**/*.asset
+- Detect asmdef files from:
+  - Assets/**/*.asmdef
+- Detect C# files from:
+  - Assets/**/*.cs
+- Resolve Unity script GUID:
+  - script path -> script `.meta` -> guid
+- Search references:
+  - GUID -> prefab/scene/asset YAML files
+
+Testing:
+Create tests for:
+- safe path handling
+- reading file ranges
+- ripgrep search parsing
+- git status parsing
+- git diff summarization fallback
+- Unity log error extraction
+- C# compile error grouping
+- missing script detection
+- script GUID reference search
+- prepare_context orchestration
+
+Provide fixture files:
+- fake Unity Editor.log
+- fake Player.log
+- fake C# scripts
+- fake prefab YAML with valid script GUID
+- fake prefab YAML with missing script
+- fake Packages/manifest.json
+- fake ProjectSettings/ProjectVersion.txt
+- fake git diff text
+
+README should include:
+1. Installation
+2. Build instructions for Swift package
+3. Python worker setup
+4. Optional Mojo setup
+5. Ollama setup
+6. LM Studio setup
+7. MCP configuration example for Codex/Claude Desktop or any MCP client
+8. Example tool calls
+9. Safety model
+10. Troubleshooting
+
+Example MCP config:
+
+{
+  "mcpServers": {
+    "local-junior-mcp": {
+      "command": "/path/to/local-junior-mcp/.build/release/local-junior-mcp",
+      "env": {
+        "PROJECT_ROOT": "/path/to/unity/project",
+        "LOCAL_JUNIOR_PROVIDER": "ollama",
+        "LOCAL_JUNIOR_BASE_URL": "http://localhost:11434",
+        "LOCAL_JUNIOR_MODEL": "qwen3-coder:8b",
+        "PYTHON_EXECUTABLE": "python3",
+        "PYTHON_WORKER_PATH": "/path/to/local-junior-mcp/Workers/python/local_junior_worker/main.py"
+      }
+    }
+  }
+}
+
+Development plan:
+Please implement this in phases.
+
+Phase 1:
+- Swift MCP server skeleton
+- Python worker call bridge
+- config loading
+- safe path resolver
+- project_map
+- search_text
+- read_file_range
+- git_status
+
+Phase 2:
+- unity_logs
+- analyze_logs
+- group_compile_errors
+- summarize_git_diff
+
+Phase 3:
+- find_relevant_files
+- summarize_file
+- local LLM integration
+- caching
+
+Phase 4:
+- find_missing_scripts
+- inspect_unity_references
+- prefab/scene YAML scanning
+
+Phase 5:
+- prepare_context orchestration
+- README
+- tests
+- example MCP config
+
+Deliverables:
+- Complete Swift package.
+- Complete Python worker package.
+- Optional Mojo skeleton, but do not make it mandatory.
+- README with setup instructions.
+- Example config.
+- Tests or at least runnable test fixtures.
+- Clear explanation of how the senior model should use this MCP server.
+
+Important:
+Do not build a toy prototype that only prints fake data.
+Implement real filesystem scanning, real git integration, real log parsing, real search, and real JSON communication between Swift and Python.
+
+Also:
+Keep outputs compact.
+The entire purpose of this system is to reduce senior model token usage.
+Do not return huge logs, huge file contents, or full project trees unless explicitly requested.
